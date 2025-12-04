@@ -1,0 +1,308 @@
+import cffi
+import numpy as np
+import os
+import sys
+
+# 1. CRITICAL: Set dlopen flags to allow CUDA symbols to resolve globally
+if hasattr(sys, 'setdlopenflags') and hasattr(os, 'RTLD_NOW') and hasattr(os, 'RTLD_GLOBAL'):
+    sys.setdlopenflags(os.RTLD_NOW | os.RTLD_GLOBAL)
+
+ffi = cffi.FFI()
+
+# =============================================================================
+# C Definition
+# =============================================================================
+ffi.cdef("""
+    typedef struct {
+        int resourceNumber;
+        char* resourceName;
+        char* implName;
+        char* implDescription;
+        long flags;
+    } BeagleInstanceDetails;
+
+    typedef struct {
+       char* name;
+       char* description;
+       long supportFlags;
+       long requiredFlags;
+    } BeagleResource;
+
+    typedef struct {
+       BeagleResource* list;
+       int length;
+    } BeagleResourceList;
+
+    typedef struct {
+        int destinationPartials;
+        int destinationScaleWrite;
+        int destinationScaleRead;
+        int child1Partials;
+        int child1TransitionMatrix;
+        int child2Partials;
+        int child2TransitionMatrix;
+    } BeagleOperation;
+
+    BeagleResourceList* beagleGetResourceList(void);
+
+    int beagleCreateInstance(
+        int tipCount, int partialsBufferCount, int compactBufferCount,
+        int stateCount, int patternCount, int eigenBufferCount,
+        int matrixBufferCount, int categoryCount, int scaleBufferCount,
+        int* resourceList, int resourceCount, long preferenceFlags,
+        long requirementFlags, BeagleInstanceDetails* returnInfo);
+
+    int beagleFinalizeInstance(int instance);
+
+    int beagleSetTipStates(int instance, int tipIndex, const int* inStates);
+    int beagleSetPartials(int instance, int bufferIndex, const double* inPartials);
+    int beagleGetPartials(int instance, int bufferIndex, int scaleIndex, double* outPartials);
+
+    int beagleSetStateFrequencies(int instance, int stateFrequenciesIndex, const double* inStateFrequencies);
+    int beagleSetEigenDecomposition(int instance, int eigenIndex, const double* inEigenVectors, const double* inEigenValues, const double* inInverseEigenVectors);
+    
+    int beagleSetCategoryRates(int instance, const double* inCategoryRates);
+    int beagleSetCategoryWeights(int instance, int categoryWeightsIndex, const double* inCategoryWeights);
+
+    int beagleUpdateTransitionMatrices(int instance, int eigenIndex, const int* probabilityIndices, const int* firstDerivativeIndices, const int* secondDerivativeIndices, const double* edgeLengths, int count);
+    int beagleGetTransitionMatrix(int instance, int matrixIndex, double* outMatrix);
+    
+    int beagleResetScaleFactors(int instance, int cumulativeScaleIndex);
+
+    int beagleUpdatePartials(const int instance, const BeagleOperation* operations, int operationCount, int cumulativeScaleIndex);
+    
+    int beagleCalculateRootLogLikelihoods(int instance, const int* bufferIndices, const int* categoryWeightsIndices, const int* stateFrequenciesIndices, const int* cumulativeScaleIndices, int count, double* outSumLogLikelihood);
+""")
+
+# =============================================================================
+# Library Loading
+# =============================================================================
+def _load_library():
+    custom_path = os.environ.get("BEAGLE_LIB_PATH")
+    if custom_path:
+        # print(f"[DEBUG] Loading custom lib: {custom_path}", flush=True)
+        return ffi.dlopen(custom_path)
+    
+    lib_names = ["libhmsbeagle.so", "libhmsbeagle.dylib", "hmsbeagle.dll"]
+    home = os.environ.get("HOME")
+    if home:
+        local_path = os.path.join(home, "beagle", "lib", "libhmsbeagle.so")
+        if os.path.exists(local_path):
+            # print(f"[DEBUG] Loading user lib: {local_path}", flush=True)
+            return ffi.dlopen(local_path)
+
+    for name in lib_names:
+        try:
+            # print(f"[DEBUG] Trying system lib: {name}", flush=True)
+            return ffi.dlopen(name)
+        except OSError:
+            continue
+            
+    raise OSError("Could not load Beagle library. Please set BEAGLE_LIB_PATH or LD_LIBRARY_PATH.")
+
+lib = _load_library()
+
+# =============================================================================
+# Wrapper Class
+# =============================================================================
+class BeagleLikelihoodCalculator:
+    def __init__(self, tip_count, state_count=4, pattern_count=1, use_gpu=False):
+        self.tip_count = tip_count
+        self.state_count = state_count
+        self.pattern_count = pattern_count
+        
+        self._keep_alive = []
+        
+        self.node_count = 2 * tip_count - 1
+        self.partials_buffer_count = self.node_count + 2 
+        self.matrix_buffer_count = self.node_count + 2
+        self.scale_count = self.node_count + 2
+        self.cumulative_scale_index = 0 
+
+        flags = 2 | 128 
+        
+        requirement_flags = 0
+        
+        if use_gpu:
+            print("[DEBUG] Requesting GPU (Auto-detect)", flush=True)
+            resource_ptr = ffi.NULL
+            resource_count = 0
+        else:
+            print("[DEBUG] Requesting CPU (Resource 0)", flush=True)
+            self._cpu_res_list = ffi.new("int[]", [0])
+            resource_ptr = self._cpu_res_list
+            resource_count = 1
+            
+            # REMOVED: Explicit Requirement Flag (Cause of Error -6)
+            # Since opencl.so is deleted, we rely on resource_ptr=[0] to select CPU safely.
+            # requirement_flags |= (1 << 16)
+
+        details = ffi.new("BeagleInstanceDetails*")
+
+        self.inst = lib.beagleCreateInstance(
+            tip_count,
+            self.partials_buffer_count,      
+            0,                    
+            state_count,          
+            pattern_count,        
+            1,                    
+            self.matrix_buffer_count,  
+            1,                    
+            self.scale_count,     
+            resource_ptr, resource_count, 
+            flags,                
+            requirement_flags,
+            details 
+        )
+        
+        if self.inst < 0:
+            self._diagnose_resources()
+            raise RuntimeError(f"Beagle CreateInstance failed with code {self.inst}")
+
+        try:
+            self.resource_name = ffi.string(details.resourceName).decode('utf-8')
+        except:
+            self.resource_name = "Unknown"
+
+    def _diagnose_resources(self):
+        """Helper to list available resources when creation fails."""
+        print("[DEBUG] Diagnosing available Beagle resources:", flush=True)
+        rlist = lib.beagleGetResourceList()
+        if not rlist:
+            print("  No resource list returned.", flush=True)
+            return
+        
+        print(f"  Found {rlist.length} resources:", flush=True)
+        for i in range(rlist.length):
+            res = rlist.list[i]
+            name = ffi.string(res.name).decode('utf-8')
+            desc = ffi.string(res.description).decode('utf-8')
+            print(f"  Resource {i}: {name} - {desc}", flush=True)
+
+    def _check(self, code, name):
+        if code < 0:
+            print(f"[ERROR] {name} FAILED with code {code}", flush=True)
+            raise RuntimeError(f"Beagle call '{name}' failed with error code {code}")
+
+    def _to_aligned_c_array(self, data, c_type="double*", alignment=32):
+        if isinstance(data, (list, tuple)):
+            dtype = np.int32 if "int" in c_type else np.float64
+            data = np.array(data, dtype=dtype)
+        
+        if isinstance(data, np.ndarray):
+            flat_data = np.ascontiguousarray(data.flatten())
+            byte_data = flat_data.tobytes()
+            nbytes = flat_data.nbytes
+        else:
+            byte_data = data
+            nbytes = len(data)
+        
+        raw_storage = ffi.new("char[]", nbytes + alignment)
+        raw_addr = int(ffi.cast("uintptr_t", raw_storage))
+        offset = alignment - (raw_addr % alignment)
+        if offset == alignment: offset = 0
+            
+        aligned_ptr = raw_storage + offset
+        target_buf = ffi.buffer(aligned_ptr, nbytes)
+        target_buf[:] = byte_data
+        final_ptr = ffi.cast(c_type, aligned_ptr)
+        
+        self._keep_alive.append(raw_storage)
+        return final_ptr
+
+    def set_model_matrix(self, Q, p_root):
+        evals, V = np.linalg.eig(Q)
+        V_inv = np.linalg.inv(V)
+        
+        c_V = self._to_aligned_c_array(V, "double*")
+        c_Vinv = self._to_aligned_c_array(V_inv, "double*")
+        c_evals = self._to_aligned_c_array(evals, "double*")
+        
+        code = lib.beagleSetEigenDecomposition(self.inst, 0, c_V, c_Vinv, c_evals)
+        self._check(code, "beagleSetEigenDecomposition")
+        
+        c_freqs = self._to_aligned_c_array(p_root, "double*")
+        code = lib.beagleSetStateFrequencies(self.inst, 0, c_freqs)
+        self._check(code, "beagleSetStateFrequencies")
+        
+        c_rates = self._to_aligned_c_array(np.array([1.0, 1.0, 1.0, 1.0]), "double*")
+        code = lib.beagleSetCategoryRates(self.inst, c_rates)
+        self._check(code, "beagleSetCategoryRates")
+
+        c_weights = self._to_aligned_c_array(np.array([1.0, 0.0, 0.0, 0.0]), "double*")
+        code = lib.beagleSetCategoryWeights(self.inst, 0, c_weights)
+        self._check(code, "beagleSetCategoryWeights")
+
+    def set_tip_partials(self, tip_dict):
+        for idx, partials in tip_dict.items():
+            c_partials = self._to_aligned_c_array(partials, "double*")
+            code = lib.beagleSetPartials(self.inst, idx, c_partials)
+            self._check(code, f"beagleSetPartials(tip={idx})")
+
+    def get_partials(self, buffer_index, scale_index=-1):
+        buffer_size = self.state_count * self.pattern_count
+        out_array = np.zeros(buffer_size, dtype=np.float64)
+        c_out = self._to_aligned_c_array(out_array, "double*")
+        code = lib.beagleGetPartials(self.inst, buffer_index, scale_index, c_out)
+        self._check(code, f"beagleGetPartials(buf={buffer_index})")
+        raw_bytes = ffi.buffer(c_out, buffer_size * 8)
+        return np.frombuffer(raw_bytes, dtype=np.float64).copy()
+
+    def get_transition_matrix(self, matrix_index):
+        size = self.state_count * self.state_count
+        out_array = np.zeros(size, dtype=np.float64)
+        c_out = self._to_aligned_c_array(out_array, "double*")
+        code = lib.beagleGetTransitionMatrix(self.inst, matrix_index, c_out)
+        self._check(code, f"beagleGetTransitionMatrix(idx={matrix_index})")
+        raw_bytes = ffi.buffer(c_out, size * 8)
+        return np.frombuffer(raw_bytes, dtype=np.float64).copy().reshape(self.state_count, self.state_count)
+
+    def update_transition_matrices(self, edge_lengths):
+        c_edge_lengths = self._to_aligned_c_array(edge_lengths, "double*")
+        indices = np.arange(len(edge_lengths), dtype=np.int32)
+        c_prob_indices = self._to_aligned_c_array(indices, "int*")
+        code = lib.beagleUpdateTransitionMatrices(
+            self.inst, 0, c_prob_indices, ffi.NULL, ffi.NULL,
+            c_edge_lengths, len(edge_lengths))
+        self._check(code, "beagleUpdateTransitionMatrices")
+
+    def update_partials(self, operations):
+        code = lib.beagleResetScaleFactors(self.inst, self.cumulative_scale_index)
+        self._check(code, "beagleResetScaleFactors")
+
+        op_dtype = np.dtype([
+            ('dest', 'i4'), ('destScaleWrite', 'i4'), ('destScaleRead', 'i4'),
+            ('child1', 'i4'), ('child1Matrix', 'i4'),
+            ('child2', 'i4'), ('child2Matrix', 'i4')
+        ])
+        ops_array = np.zeros(len(operations), dtype=op_dtype)
+        for i, op in enumerate(operations):
+            ops_array[i]['dest'] = op['dest']
+            ops_array[i]['destScaleWrite'] = op['dest']
+            ops_array[i]['destScaleRead'] = -1
+            ops_array[i]['child1'] = op['child1']
+            ops_array[i]['child1Matrix'] = op['child1']
+            ops_array[i]['child2'] = op['child2']
+            ops_array[i]['child2Matrix'] = op['child2']
+
+        c_ops = self._to_aligned_c_array(ops_array, "BeagleOperation*")
+        code = lib.beagleUpdatePartials(self.inst, c_ops, len(operations), self.cumulative_scale_index)
+        self._check(code, "beagleUpdatePartials")
+
+    def calculate_root_log_likelihood(self, root_index):
+        c_out_logL = self._to_aligned_c_array(np.zeros(1), "double*")
+        
+        buffer_indices = self._to_aligned_c_array([root_index], "int*")
+        freq_indices = self._to_aligned_c_array([0], "int*")
+        scale_indices = self._to_aligned_c_array([self.cumulative_scale_index], "int*")
+        cat_weight_indices = self._to_aligned_c_array([0], "int*")
+        
+        code = lib.beagleCalculateRootLogLikelihoods(
+            self.inst, buffer_indices, cat_weight_indices, freq_indices, scale_indices, 1, c_out_logL)
+        self._check(code, "beagleCalculateRootLogLikelihoods")
+        
+        return c_out_logL[0]
+
+    def __del__(self):
+        if hasattr(self, 'inst') and self.inst >= 0:
+            lib.beagleFinalizeInstance(self.inst)
