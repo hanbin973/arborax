@@ -192,7 +192,9 @@ def _beagle_likelihood_op(P_stack, pi, context):
     def _callback(P, p):
         return _beagle_fwd_callback(P, p, context)[0]
 
-    return jax.pure_callback(_callback, result_shape, P_stack, pi)
+    return jax.pure_callback(
+        _callback, result_shape, P_stack, pi, vmap_method="sequential"
+    )
 
 
 def _beagle_fwd(P_stack, pi, context):
@@ -212,6 +214,7 @@ def _beagle_fwd(P_stack, pi, context):
         ),
         P_stack,
         pi,
+        vmap_method="sequential",
     )
     return logl, (partials, scales, P_stack, pi, context)
 
@@ -232,6 +235,7 @@ def _beagle_bwd(res, g):
         scales,
         P_stack,
         pi,
+        vmap_method="sequential",
     )
     return (d_P, d_pi, None)
 
