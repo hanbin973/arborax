@@ -1,7 +1,8 @@
 import numpy as np
 import jax
 import jax.numpy as jnp
-from arborax.binder import BeagleJAX
+
+from tests.conftest import BeagleJAX
 from arborax.beagle_cffi import BeagleLikelihoodCalculator
 
 

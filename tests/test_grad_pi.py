@@ -3,7 +3,8 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from jax.test_util import check_grads
-from arborax.binder import BeagleJAX
+
+from tests.conftest import BeagleJAX
 
 
 def test_pi_gradient():

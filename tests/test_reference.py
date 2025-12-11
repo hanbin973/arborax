@@ -4,6 +4,7 @@ import jax.numpy as jnp
 import jax.scipy as jsp
 from jax import lax
 
+from arborax import loglik
 from arborax.jax_ops import ArboraxContext
 
 
@@ -126,6 +127,8 @@ def _generate_problem(
         "pi": jnp.array(pi_np, dtype=jnp.float32),
         "tip_tensor": jnp.array(tip_tensor, dtype=jnp.float32),
         "ops_array": jnp.array(ops_array, dtype=jnp.int32),
+        "edge_map": edge_map,
+        "tip_data": tip_data,
     }
 
 
@@ -233,4 +236,35 @@ def test_zero_length_edges_stability(seed):
     )(Q_jax)
     np.testing.assert_allclose(
         np.array(grad_Q_beagle), np.array(grad_Q_ref), atol=1e-3, rtol=1e-3
+    )
+
+
+def _edge_list_and_lengths(edge_map):
+    edges = []
+    lengths = []
+    for child in sorted(edge_map.keys()):
+        parent, length = edge_map[child]
+        edges.append((parent, child))
+        lengths.append(length)
+    return np.array(edges, dtype=np.int32), np.array(lengths, dtype=np.float32)
+
+
+def test_loglik_api_matches_context(seed):
+    problem = _generate_problem(seed)
+    tip_count = problem["context"].calc.tip_count
+    tip_array = np.stack([problem["tip_data"][i] for i in range(tip_count)], axis=0)
+    edge_list, lengths = _edge_list_and_lengths(problem["edge_map"])
+
+    api_ll = loglik(
+        tip_array,
+        edge_list=edge_list,
+        branch_lengths=lengths,
+        Q=np.array(problem["Q"]),
+        pi=np.array(problem["pi"]),
+    )
+    context_ll = problem["context"].likelihood_functional(
+        problem["Q"], problem["pi"], problem["edge_lengths"]
+    )
+    np.testing.assert_allclose(
+        np.array(api_ll), np.array(context_ll), atol=1e-5, rtol=1e-5
     )
