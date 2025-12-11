@@ -87,7 +87,7 @@ def python_scaled_likelihood(tip_data, operations, edge_map, Q, pi, pattern_weig
     return np.sum(log_L * pattern_weights), node_state, node_cumulative_scales
 
 
-def test_large_tree_scaling():
+def test_large_tree_scaling(use_gpu):
     print("\n=== STARTING LARGE TREE SCALING TEST ===")
 
     # 1. Constants
@@ -140,7 +140,7 @@ def test_large_tree_scaling():
     # 6. Run BEAGLE Implementation
     print("Computing BEAGLE Likelihood...")
     beagle = BeagleLikelihoodCalculator(
-        tip_count=N_TAXA, state_count=N_STATES, pattern_count=1, use_gpu=False
+        tip_count=N_TAXA, state_count=N_STATES, pattern_count=1, use_gpu=use_gpu
     )
 
     beagle.set_tip_partials(tip_data)

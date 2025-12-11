@@ -25,6 +25,12 @@ def seed(request):
     return seed_value
 
 
+@pytest.fixture(params=[True, False])
+def use_gpu(request):
+    """Run tests against both CPU and GPU BEAGLE backends when available."""
+    return request.param
+
+
 class BeagleJAX:
     """Test-only helper that wraps BeagleLikelihoodCalculator with custom VJP."""
 

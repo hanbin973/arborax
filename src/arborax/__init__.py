@@ -1,18 +1,18 @@
 from collections import defaultdict
-from typing import Dict, List, Sequence, Tuple, Union
+from typing import Sequence, Union
 
 import numpy as np
 
 from .tree import Node, parse_newick_to_beagle_nodes
 from .beagle_cffi import BeagleLikelihoodCalculator
-from .jax_ops import ArboraxContext
+from .context import ArboraxContext
 
 __version__ = "0.1.0"
 
 
 def loglik(
-    tip_partials: Union[np.ndarray, Dict[int, np.ndarray]],
-    edge_list: Sequence[Tuple[int, int]],
+    tip_partials: Union[np.ndarray, dict[int, np.ndarray]],
+    edge_list: Sequence[tuple[int, int]],
     branch_lengths: Sequence[float],
     Q: np.ndarray,
     pi: np.ndarray,
@@ -57,7 +57,7 @@ def loglik(
 
 
 def _normalize_tip_partials(
-    tip_partials: Union[np.ndarray, Dict[int, np.ndarray]],
+    tip_partials: Union[np.ndarray, dict[int, np.ndarray]],
 ) -> np.ndarray:
     if isinstance(tip_partials, dict):
         if not tip_partials:
@@ -76,8 +76,8 @@ def _normalize_tip_partials(
     return arr
 
 
-def _build_tree_from_edges(edge_array: np.ndarray, tip_count: int) -> Dict[str, object]:
-    parent_to_children: Dict[int, List[int]] = defaultdict(list)
+def _build_tree_from_edges(edge_array: np.ndarray, tip_count: int) -> dict[str, object]:
+    parent_to_children: dict[int, list[int]] = defaultdict(list)
     children = set()
     nodes = set()
     for parent, child in edge_array:
@@ -109,7 +109,7 @@ def _build_tree_from_edges(edge_array: np.ndarray, tip_count: int) -> Dict[str, 
         raise ValueError("Tree must have exactly one root")
     root = roots[0]
 
-    operations: List[Dict[str, int]] = []
+    operations: list[dict[str, int]] = []
 
     def emit(node: int):
         kids = parent_to_children.get(node)

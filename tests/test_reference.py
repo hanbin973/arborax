@@ -5,7 +5,7 @@ import jax.scipy as jsp
 from jax import lax
 
 from arborax import loglik
-from arborax.jax_ops import ArboraxContext
+from arborax.context import ArboraxContext
 
 
 def _random_rate_matrix(state_count, rng):
@@ -99,7 +99,12 @@ def _reference_sum_loglik(edge_lengths, Q, pi, tip_tensor, ops_array):
 
 
 def _generate_problem(
-    seed, tip_count=5, pattern_count=3, state_count=4, edge_range=(0.01, 0.25)
+    seed,
+    tip_count=5,
+    pattern_count=3,
+    state_count=4,
+    edge_range=(0.01, 0.25),
+    use_gpu=False,
 ):
     rng = np.random.default_rng(seed)
 
@@ -116,7 +121,10 @@ def _generate_problem(
     pi_np = _random_pi(state_count, rng)
 
     context = ArboraxContext(
-        tip_count=tip_count, operations=operations, pattern_count=pattern_count
+        tip_count=tip_count,
+        operations=operations,
+        pattern_count=pattern_count,
+        use_gpu=use_gpu,
     )
     context.bind_data(tip_data, Q_np, pi_np)
 
@@ -132,8 +140,8 @@ def _generate_problem(
     }
 
 
-def test_random_loglik_matches_reference(seed):
-    problem = _generate_problem(seed)
+def test_random_loglik_matches_reference(seed, use_gpu):
+    problem = _generate_problem(seed, use_gpu=use_gpu)
 
     beagle_ll = jnp.sum(
         problem["context"].likelihood_functional(
@@ -152,8 +160,8 @@ def test_random_loglik_matches_reference(seed):
     )
 
 
-def test_random_gradients_match_reference(seed):
-    problem = _generate_problem(seed)
+def test_random_gradients_match_reference(seed, use_gpu):
+    problem = _generate_problem(seed, use_gpu=use_gpu)
 
     context = problem["context"]
     edge_lengths_jax = problem["edge_lengths"]
@@ -186,7 +194,7 @@ def test_random_gradients_match_reference(seed):
     )
 
 
-def test_zero_length_edges_stability(seed):
+def test_zero_length_edges_stability(seed, use_gpu):
     rng = np.random.default_rng(seed)
     tip_count = 4
     pattern_count = 2
@@ -208,7 +216,10 @@ def test_zero_length_edges_stability(seed):
     pi_np = _random_pi(state_count, rng)
 
     context = ArboraxContext(
-        tip_count=tip_count, operations=operations, pattern_count=pattern_count
+        tip_count=tip_count,
+        operations=operations,
+        pattern_count=pattern_count,
+        use_gpu=use_gpu,
     )
     context.bind_data(tip_data, Q_np, pi_np)
 
@@ -249,8 +260,8 @@ def _edge_list_and_lengths(edge_map):
     return np.array(edges, dtype=np.int32), np.array(lengths, dtype=np.float32)
 
 
-def test_loglik_api_matches_context(seed):
-    problem = _generate_problem(seed)
+def test_loglik_api_matches_context(seed, use_gpu):
+    problem = _generate_problem(seed, use_gpu=use_gpu)
     tip_count = problem["context"].calc.tip_count
     tip_array = np.stack([problem["tip_data"][i] for i in range(tip_count)], axis=0)
     edge_list, lengths = _edge_list_and_lengths(problem["edge_map"])

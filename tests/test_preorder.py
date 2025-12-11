@@ -1,7 +1,7 @@
 import numpy as np
 from jax.scipy.linalg import expm
 
-from arborax.jax_ops import ArboraxContext
+from arborax.context import ArboraxContext
 from tests.test_reference import _generate_problem
 
 
@@ -91,8 +91,8 @@ def _transition_stack(Q, edge_lengths):
     return P_stack
 
 
-def test_preorder_partials_match_beagle(seed):
-    problem = _generate_problem(seed)
+def test_preorder_partials_match_beagle(seed, use_gpu):
+    problem = _generate_problem(seed, use_gpu=use_gpu)
     context: ArboraxContext = problem["context"]
 
     Q = np.array(problem["Q"], dtype=np.float64)

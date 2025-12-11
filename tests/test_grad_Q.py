@@ -33,7 +33,7 @@ def _sample_Q_pi(rng):
     return jnp.array(Q_np, dtype=jnp.float32), jnp.array(pi_np, dtype=jnp.float32)
 
 
-def _build_problem(seed):
+def _build_problem(seed, use_gpu=False):
     rng = np.random.default_rng(seed)
     Q_jax, pi_jax = _sample_Q_pi(rng)
     tip_data = {
@@ -53,6 +53,7 @@ def _build_problem(seed):
         tip_data=tip_data,
         edge_map=EDGE_MAP,
         operations=OPS,
+        use_gpu=use_gpu,
         dtype=jnp.float32,
     )
 
@@ -68,14 +69,14 @@ def _check_gradients(binder, Q_jax, pi_jax):
     )
 
 
-def test_q_gradient():
-    binder, Q_jax, pi_jax = _build_problem(seed=42)
+def test_q_gradient(use_gpu):
+    binder, Q_jax, pi_jax = _build_problem(seed=42, use_gpu=use_gpu)
     _check_gradients(binder, Q_jax, pi_jax)
 
 
-def test_q_gradient_repeated_runs(seed):
+def test_q_gradient_repeated_runs(seed, use_gpu):
     rng = np.random.default_rng(seed + 1337)
-    binder, _, _ = _build_problem(rng.integers(0, 1_000_000))
+    binder, _, _ = _build_problem(rng.integers(0, 1_000_000), use_gpu=use_gpu)
     for _ in range(5):
         Q_jax, pi_jax = _sample_Q_pi(rng)
         _check_gradients(binder, Q_jax, pi_jax)

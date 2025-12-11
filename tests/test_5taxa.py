@@ -51,7 +51,7 @@ def pure_python_likelihood(tip_data, edge_map, Q, pi, pattern_weights):
     return np.sum(log_L * pattern_weights)
 
 
-def test_5taxa_likelihood():
+def test_5taxa_likelihood(use_gpu):
     print("\n=== STARTING BEAGLE 5-TAXA TEST ===")
 
     N_TAXA = 5
@@ -88,7 +88,10 @@ def test_5taxa_likelihood():
 
     # --- Run BEAGLE Implementation ---
     beagle = BeagleLikelihoodCalculator(
-        tip_count=N_TAXA, state_count=N_STATES, pattern_count=N_PATTERNS, use_gpu=False
+        tip_count=N_TAXA,
+        state_count=N_STATES,
+        pattern_count=N_PATTERNS,
+        use_gpu=use_gpu,
     )
 
     beagle.set_tip_partials(tip_data)
@@ -146,7 +149,7 @@ def _random_tip_vectors(tip_count, rng):
     return tip_data
 
 
-def test_5taxa_randomized_likelihood(seed):
+def test_5taxa_randomized_likelihood(seed, use_gpu):
     rng = np.random.default_rng(seed)
 
     N_TAXA = 5
@@ -172,7 +175,7 @@ def test_5taxa_randomized_likelihood(seed):
     py_logL = pure_python_likelihood(tip_data, edge_map, Q, pi, pattern_weights)
 
     beagle = BeagleLikelihoodCalculator(
-        tip_count=N_TAXA, state_count=N_STATES, pattern_count=1, use_gpu=False
+        tip_count=N_TAXA, state_count=N_STATES, pattern_count=1, use_gpu=use_gpu
     )
     beagle_tip_partials = {i: v.reshape(1, -1) for i, v in tip_data.items()}
     beagle.set_tip_partials(beagle_tip_partials)

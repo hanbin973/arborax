@@ -7,7 +7,7 @@ from jax.test_util import check_grads
 from tests.conftest import BeagleJAX
 
 
-def test_pi_gradient():
+def test_pi_gradient(use_gpu):
     print("\n=== STARTING PI GRADIENT TEST (jax.test_util) ===")
 
     # 1. Setup Constants
@@ -49,6 +49,7 @@ def test_pi_gradient():
         tip_data=dummy_tips,
         edge_map=edge_map,
         operations=ops,
+        use_gpu=use_gpu,
         dtype=jnp.float32,
     )
 

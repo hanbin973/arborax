@@ -6,7 +6,7 @@ from tests.conftest import BeagleJAX
 from arborax.beagle_cffi import BeagleLikelihoodCalculator
 
 
-def test_batch_site_likelihood():
+def test_batch_site_likelihood(use_gpu):
     print("\n=== STARTING BATCH SITE PATTERN TEST (Float32) ===")
 
     # 1. Setup Constants
@@ -54,7 +54,7 @@ def test_batch_site_likelihood():
         tip_data=dummy_tips,
         edge_map=edge_map,
         operations=ops,
-        use_gpu=False,
+        use_gpu=use_gpu,
         dtype=jnp.float32,
     )
 
@@ -84,7 +84,9 @@ def test_batch_site_likelihood():
             # Cast to float64 for reference calculation
             single_site_tips[t] = tip_partials_np[t, p_idx, :].astype(np.float64)
 
-        ref_beagle = BeagleLikelihoodCalculator(N_TAXA, N_STATES, pattern_count=1)
+        ref_beagle = BeagleLikelihoodCalculator(
+            N_TAXA, N_STATES, pattern_count=1, use_gpu=use_gpu
+        )
         ref_beagle.set_tip_partials(single_site_tips)
         ref_beagle.set_model_matrix(Q, pi)
 
@@ -121,7 +123,7 @@ def _random_rate_matrix(rng):
     return rates
 
 
-def test_batch_site_likelihood_randomized(seed):
+def test_batch_site_likelihood_randomized(seed, use_gpu):
     rng = np.random.default_rng(seed)
     N_TAXA = 3
     N_STATES = 4
@@ -152,6 +154,7 @@ def test_batch_site_likelihood_randomized(seed):
         tip_data=dummy_tips,
         edge_map=edge_map,
         operations=ops,
+        use_gpu=use_gpu,
         dtype=jnp.float32,
     )
 
@@ -174,7 +177,9 @@ def test_batch_site_likelihood_randomized(seed):
             i: tip_partials[i, p_idx, :].reshape(1, -1).astype(np.float64)
             for i in range(N_TAXA)
         }
-        ref = BeagleLikelihoodCalculator(N_TAXA, N_STATES, pattern_count=1)
+        ref = BeagleLikelihoodCalculator(
+            N_TAXA, N_STATES, pattern_count=1, use_gpu=use_gpu
+        )
         ref.set_tip_partials(tip_dict)
         ref.set_model_matrix(Q, pi)
         indices = np.arange(len(edge_map), dtype=np.int32)
