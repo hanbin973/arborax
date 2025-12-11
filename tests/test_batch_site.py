@@ -1,9 +1,9 @@
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
 
-from tests.conftest import BeagleJAX
 from arborax.beagle_cffi import BeagleLikelihoodCalculator
+from tests.conftest import BeagleJAX
 
 
 def test_batch_site_likelihood(use_gpu):

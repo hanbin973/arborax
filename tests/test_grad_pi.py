@@ -1,7 +1,7 @@
-import pytest
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
+import pytest
 from jax.test_util import check_grads
 
 from tests.conftest import BeagleJAX

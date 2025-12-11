@@ -1,8 +1,10 @@
+import os
+
 import jax
 import jax.numpy as jnp
 import numpy as np
-import os
 from jax.scipy.linalg import expm
+
 from .beagle_cffi import BeagleLikelihoodCalculator
 
 

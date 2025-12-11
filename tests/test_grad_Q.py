@@ -1,11 +1,10 @@
-import pytest
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
+import pytest
 from jax.test_util import check_grads
 
 from tests.conftest import BeagleJAX
-
 
 N_TAXA = 100
 N_STATES = 4

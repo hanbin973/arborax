@@ -1,6 +1,7 @@
-import pytest
 import numpy as np
+import pytest
 from scipy.linalg import expm
+
 from arborax.beagle_cffi import BeagleLikelihoodCalculator
 
 

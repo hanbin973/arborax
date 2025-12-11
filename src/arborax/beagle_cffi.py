@@ -1,9 +1,10 @@
+import ctypes.util
+import os
+import re
+import sys
+
 import cffi
 import numpy as np
-import os
-import sys
-import ctypes.util
-import re
 
 # 1. CRITICAL: Set dlopen flags to allow CUDA symbols to resolve globally
 if (
