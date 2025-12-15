@@ -1,6 +1,7 @@
 import numpy as np
 from jax.scipy.linalg import expm
 
+from arborax.beagle_cffi import BeagleLikelihoodCalculator
 from arborax.context import ArboraxContext
 from tests.test_reference import _generate_problem
 
@@ -99,7 +100,13 @@ def test_preorder_partials_match_beagle(seed, use_gpu):
     pi = np.array(problem["pi"], dtype=np.float64)
     edge_lengths = np.array(problem["edge_lengths"], dtype=np.float64)
 
-    calc = context.calc
+    calc = BeagleLikelihoodCalculator(
+        tip_count=context.tip_count,
+        state_count=context.state_count,
+        pattern_count=context.pattern_count,
+        use_gpu=use_gpu,
+    )
+    calc.set_tip_partials(problem["tip_data"])
     P_stack = _transition_stack(Q, edge_lengths)
 
     calc.set_model_matrix(Q, pi)

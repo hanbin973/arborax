@@ -6,6 +6,76 @@ import sys
 import cffi
 import numpy as np
 
+
+def _is_truthy(value):
+    return value not in (None, "", "0", "false", "False")
+
+
+def _running_under_valgrind():
+    """Best-effort check for Valgrind so we can avoid unsupported plugins."""
+
+    if _is_truthy(os.environ.get("ARBORAX_ASSUME_VALGRIND")):
+        return True
+
+    preload = os.environ.get("LD_PRELOAD", "").lower()
+    if "valgrind" in preload or "vgpreload" in preload:
+        return True
+
+    for flag in ("VALGRIND", "RUNNING_ON_VALGRIND", "RUNNING_UNDER_VALGRIND"):
+        if _is_truthy(os.environ.get(flag)):
+            return True
+
+    try:
+        with open("/proc/self/maps", "r", encoding="utf-8", errors="ignore") as handle:
+            while True:
+                snippet = handle.read(8192)
+                if not snippet:
+                    break
+                lower = snippet.lower()
+                if "valgrind" in lower or "vgpreload" in lower:
+                    return True
+    except OSError:
+        pass
+
+    return False
+
+
+def _ensure_env_flag(env_var):
+    """Set env_var to '1' unless already truthy. Returns True if modified."""
+
+    current = os.environ.get(env_var)
+    if _is_truthy(current):
+        return False
+    os.environ[env_var] = "1"
+    return True
+
+
+def _disable_beagle_plugins_under_valgrind():
+    if not _running_under_valgrind():
+        return False, False
+
+    avx = _ensure_env_flag("ARBORAX_DISABLE_BEAGLE_AVX")
+    cuda = _ensure_env_flag("ARBORAX_DISABLE_BEAGLE_CUDA")
+    return avx, cuda
+
+
+_AVX_DISABLED_FOR_VALGRIND, _CUDA_DISABLED_FOR_VALGRIND = (
+    _disable_beagle_plugins_under_valgrind()
+)
+
+_FORCE_SCALAR_BEAGLE = (
+    _is_truthy(os.environ.get("ARBORAX_FORCE_SCALAR_BEAGLE"))
+    or _running_under_valgrind()
+)
+
+BEAGLE_FLAG_PRECISION_DOUBLE = 1 << 1
+BEAGLE_FLAG_SCALING_AUTO = 1 << 7
+BEAGLE_FLAG_VECTOR_NONE = 1 << 12
+BEAGLE_FLAG_PROCESSOR_GPU = 1 << 16
+BEAGLE_FLAG_FRAMEWORK_CUDA = 1 << 22
+BEAGLE_ERROR_NO_IMPLEMENTATION = -7
+BEAGLE_OP_NONE = -1
+
 # 1. CRITICAL: Set dlopen flags to allow CUDA symbols to resolve globally
 if (
     hasattr(sys, "setdlopenflags")
@@ -186,6 +256,7 @@ class BeagleLikelihoodCalculator:
         self.tip_count = tip_count
         self.state_count = state_count
         self.pattern_count = pattern_count
+        self.use_gpu = use_gpu
 
         self._keep_alive = []
         self.pi = None
@@ -201,11 +272,12 @@ class BeagleLikelihoodCalculator:
         self.scale_count = self.node_count + 2
         self.cumulative_scale_index = 0
 
-        flags = 2 | 128
-        requirement_flags = 0
+        flags = BEAGLE_FLAG_PRECISION_DOUBLE | BEAGLE_FLAG_SCALING_AUTO
+        requirement_flags = BEAGLE_FLAG_VECTOR_NONE if _FORCE_SCALAR_BEAGLE else 0
 
         if use_gpu:
             print("[DEBUG] Requesting GPU (Auto-detect)", flush=True)
+            flags |= BEAGLE_FLAG_PROCESSOR_GPU | BEAGLE_FLAG_FRAMEWORK_CUDA
             resource_ptr = ffi.NULL
             resource_count = 0
         else:
@@ -243,6 +315,27 @@ class BeagleLikelihoodCalculator:
 
         self._init_pattern_weights()
 
+    def _calculate_root_log_likelihood_beagle(self, root_index):
+        buffer_indices = self._to_aligned_c_array([root_index], "int*")
+        category_weights_indices = self._to_aligned_c_array([0], "int*")
+        state_frequencies_indices = self._to_aligned_c_array([0], "int*")
+        cumulative_scale_indices = self._to_aligned_c_array(
+            [self.cumulative_scale_index], "int*"
+        )
+        out = self._to_aligned_c_array([0.0], "double*")
+
+        code = lib.beagleCalculateRootLogLikelihoods(
+            self.inst,
+            buffer_indices,
+            category_weights_indices,
+            state_frequencies_indices,
+            cumulative_scale_indices,
+            1,
+            out,
+        )
+        self._check(code, "beagleCalculateRootLogLikelihoods")
+        return float(np.frombuffer(ffi.buffer(out, 8), dtype=np.float64)[0])
+
     def set_pattern_weights(self, weights=None):
         if weights is None:
             self.pattern_weights = np.ones(self.pattern_count, dtype=np.float64)
@@ -272,6 +365,16 @@ class BeagleLikelihoodCalculator:
 
     def _check(self, code, name):
         if code < 0:
+            if (
+                code == BEAGLE_ERROR_NO_IMPLEMENTATION
+                and name == "beagleGetScaleFactors"
+            ):
+                raise RuntimeError(
+                    "Beagle call 'beagleGetScaleFactors' failed with BEAGLE_ERROR_NO_IMPLEMENTATION (-7). "
+                    "This is expected for the BEAGLE GPU backend (BeagleGPUImpl::getScaleFactors is unimplemented). "
+                    "Run with `use_gpu=False` or skip GPU tests, or rebuild/use a BEAGLE backend that supports "
+                    "scale factor retrieval."
+                )
             raise RuntimeError(f"Beagle call '{name}' failed with error code {code}")
 
     def _to_aligned_c_array(self, data, c_type="double*", alignment=32):
@@ -530,7 +633,17 @@ class BeagleLikelihoodCalculator:
             pi = self.pi
 
         root_partials = self.get_partials(root_index)
-        log_scalers = self.get_scale_factors(self.cumulative_scale_index)
+        try:
+            log_scalers = self.get_scale_factors(self.cumulative_scale_index)
+        except RuntimeError as exc:
+            if "beagleGetScaleFactors" in str(exc) and "NO_IMPLEMENTATION" in str(exc):
+                raise RuntimeError(
+                    "Per-site log likelihoods require scale factors, but the current BEAGLE backend "
+                    "does not implement beagleGetScaleFactors (BEAGLE_ERROR_NO_IMPLEMENTATION). "
+                    "Use `calculate_root_log_likelihood()` for a stable scalar log-likelihood, or "
+                    "run with a CPU backend."
+                ) from exc
+            raise
 
         partials_matrix = root_partials.reshape(self.pattern_count, self.state_count)
         site_probs = np.dot(partials_matrix, pi)
@@ -541,8 +654,7 @@ class BeagleLikelihoodCalculator:
         return log_site_probs + log_scalers
 
     def calculate_root_log_likelihood(self, root_index):
-        site_ll = self.calculate_site_log_likelihoods(root_index)
-        return np.dot(site_ll, self.pattern_weights)
+        return self._calculate_root_log_likelihood_beagle(root_index)
 
     def calculate_edge_derivatives(self, operations, edge_count):
         parent_indices = np.zeros(edge_count, dtype=np.int32)
@@ -618,6 +730,15 @@ class BeagleLikelihoodCalculator:
     def preorder_buffer_index(self, node_index):
         return self.preorder_offset + node_index
 
+    def close(self):
+        inst = getattr(self, "inst", -1)
+        if inst >= 0:
+            lib.beagleFinalizeInstance(inst)
+            self.inst = -1
+        # release any buffers referencing lib memory
+        keep_alive = getattr(self, "_keep_alive", None)
+        if keep_alive is not None:
+            keep_alive.clear()
+
     def __del__(self):
-        if hasattr(self, "inst") and self.inst >= 0:
-            lib.beagleFinalizeInstance(self.inst)
+        self.close()

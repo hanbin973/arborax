@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from arborax.beagle_cffi import BeagleLikelihoodCalculator
-from tests.conftest import BeagleJAX
+from tests.conftest import build_context_binder
 
 
 def test_batch_site_likelihood(use_gpu):
@@ -45,27 +45,21 @@ def test_batch_site_likelihood(use_gpu):
     # 5. Run BATCHED JAX Binder
     print(f"Initializing JAX Binder...")
 
-    dummy_tips = {i: np.ones((N_PATTERNS, N_STATES)) for i in range(N_TAXA)}
-
-    binder = BeagleJAX(
-        tip_count=N_TAXA,
-        state_count=N_STATES,
-        pattern_count=N_PATTERNS,
-        tip_data=dummy_tips,
-        edge_map=edge_map,
+    print("Building Arborax context for batched evaluation...")
+    tip_dict = {i: tip_partials_np[i].astype(np.float64) for i in range(N_TAXA)}
+    context = build_context_binder(
+        tip_data=tip_dict,
         operations=ops,
+        pattern_count=N_PATTERNS,
         use_gpu=use_gpu,
-        dtype=jnp.float32,
     )
 
-    print("Calling log_likelihood with dynamic tip partials...")
-    tip_partials_jax = jnp.array(tip_partials_np)
-
-    jit_log_likelihood = jax.jit(binder.log_likelihood)
-
-    batched_result = jit_log_likelihood(
-        edge_lengths_jax, Q_jax, pi_jax, tip_partials_jax
+    print("Calling log_likelihood through ArboraxContext...")
+    jit_log_likelihood = jax.jit(
+        lambda edge_lengths, Q, pi: context.likelihood_functional(Q, pi, edge_lengths)
     )
+
+    batched_result = jit_log_likelihood(edge_lengths_jax, Q_jax, pi_jax)
 
     print(f"Batched Result Shape: {batched_result.shape}")
 
@@ -82,7 +76,9 @@ def test_batch_site_likelihood(use_gpu):
         single_site_tips = {}
         for t in range(N_TAXA):
             # Cast to float64 for reference calculation
-            single_site_tips[t] = tip_partials_np[t, p_idx, :].astype(np.float64)
+            single_site_tips[t] = np.expand_dims(
+                tip_partials_np[t, p_idx, :].astype(np.float64), axis=0
+            )
 
         ref_beagle = BeagleLikelihoodCalculator(
             N_TAXA, N_STATES, pattern_count=1, use_gpu=use_gpu
@@ -144,20 +140,6 @@ def test_batch_site_likelihood_randomized(seed, use_gpu):
     tip_partials /= tip_partials.sum(axis=2, keepdims=True)
     tip_partials = tip_partials.astype(np.float32)
 
-    dummy_tips = {
-        i: np.ones((N_PATTERNS, N_STATES), dtype=np.float32) for i in range(N_TAXA)
-    }
-    binder = BeagleJAX(
-        tip_count=N_TAXA,
-        state_count=N_STATES,
-        pattern_count=N_PATTERNS,
-        tip_data=dummy_tips,
-        edge_map=edge_map,
-        operations=ops,
-        use_gpu=use_gpu,
-        dtype=jnp.float32,
-    )
-
     edge_lengths = np.zeros(len(edge_map), dtype=np.float64)
     for child, (_, length) in edge_map.items():
         edge_lengths[child] = length
@@ -165,11 +147,15 @@ def test_batch_site_likelihood_randomized(seed, use_gpu):
     edge_lengths_jax = jnp.array(edge_lengths, dtype=jnp.float32)
     Q_jax = jnp.array(Q, dtype=jnp.float32)
     pi_jax = jnp.array(pi, dtype=jnp.float32)
-    tip_partials_jax = jnp.array(tip_partials, dtype=jnp.float32)
-
-    batched_ll = binder.log_likelihood(
-        edge_lengths_jax, Q_jax, pi_jax, tip_partials_jax
+    tip_dict = {i: tip_partials[i].astype(np.float64) for i in range(N_TAXA)}
+    context = build_context_binder(
+        tip_data=tip_dict,
+        operations=ops,
+        pattern_count=N_PATTERNS,
+        use_gpu=use_gpu,
     )
+
+    batched_ll = context.likelihood_functional(Q_jax, pi_jax, edge_lengths_jax)
 
     expected_lls = []
     for p_idx in range(N_PATTERNS):

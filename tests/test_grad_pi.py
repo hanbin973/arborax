@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from jax.test_util import check_grads
 
-from tests.conftest import BeagleJAX
+from tests.conftest import build_context_binder
 
 
 def test_pi_gradient(use_gpu):
@@ -28,7 +28,7 @@ def test_pi_gradient(use_gpu):
 
     # 4. Data Setup
     dummy_tips = {
-        i: np.ones((N_PATTERNS, N_STATES), dtype=np.float32) for i in range(N_TAXA)
+        i: np.ones((N_PATTERNS, N_STATES), dtype=np.float64) for i in range(N_TAXA)
     }
 
     # Pattern 0: All As
@@ -42,15 +42,11 @@ def test_pi_gradient(use_gpu):
     dummy_tips[2][1] = [0, 0, 1, 0]
 
     # 5. Initialize Binder
-    binder = BeagleJAX(
-        tip_count=N_TAXA,
-        state_count=N_STATES,
-        pattern_count=N_PATTERNS,
+    binder = build_context_binder(
         tip_data=dummy_tips,
-        edge_map=edge_map,
         operations=ops,
+        pattern_count=N_PATTERNS,
         use_gpu=use_gpu,
-        dtype=jnp.float32,
     )
 
     # Fixed inputs
@@ -63,7 +59,7 @@ def test_pi_gradient(use_gpu):
     # We close over edge_lengths and Q so they are treated as constants.
     def func_to_check(pi):
         # Return sum of log-likelihoods to get a scalar output for gradient check
-        return jnp.sum(binder.log_likelihood(edge_lengths_jax, Q_jax, pi))
+        return jnp.sum(binder.likelihood_functional(Q_jax, pi, edge_lengths_jax))
 
     print("Checking gradients via jax.test_util.check_grads...")
 

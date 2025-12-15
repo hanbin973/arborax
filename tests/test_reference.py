@@ -262,7 +262,7 @@ def _edge_list_and_lengths(edge_map):
 
 def test_loglik_api_matches_context(seed, use_gpu):
     problem = _generate_problem(seed, use_gpu=use_gpu)
-    tip_count = problem["context"].calc.tip_count
+    tip_count = problem["context"].tip_count
     tip_array = np.stack([problem["tip_data"][i] for i in range(tip_count)], axis=0)
     edge_list, lengths = _edge_list_and_lengths(problem["edge_map"])
 

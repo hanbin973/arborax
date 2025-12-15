@@ -88,7 +88,7 @@ def python_scaled_likelihood(tip_data, operations, edge_map, Q, pi, pattern_weig
     return np.sum(log_L * pattern_weights), node_state, node_cumulative_scales
 
 
-def test_large_tree_scaling(use_gpu):
+def test_large_tree_scaling(use_gpu, require_beagle_scalers):
     print("\n=== STARTING LARGE TREE SCALING TEST ===")
 
     # 1. Constants

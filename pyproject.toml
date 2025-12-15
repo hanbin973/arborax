@@ -21,3 +21,8 @@ build-backend = "uv_build"
 dev = [
     "pytest>=9.0.2",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: long-running tests (opt-in)",
+]

@@ -4,18 +4,36 @@ import numpy as np
 import pytest
 from jax.test_util import check_grads
 
-from tests.conftest import BeagleJAX
+from tests.conftest import build_context_binder
 
 N_TAXA = 100
 N_STATES = 4
 N_PATTERNS = 2
 
-EDGE_MAP = {0: (3, 0.1), 1: (3, 0.1), 2: (4, 0.1), 3: (4, 0.1)}
+_INTERNAL_A = N_TAXA
+_INTERNAL_B = N_TAXA + 1
+
+EDGE_MAP = {
+    0: (_INTERNAL_A, 0.1),
+    1: (_INTERNAL_A, 0.1),
+    2: (_INTERNAL_B, 0.1),
+    _INTERNAL_A: (_INTERNAL_B, 0.1),
+}
+
+
+def _edge_lengths_array():
+    arr = np.zeros(2 * N_TAXA - 1, dtype=np.float32)
+    for child, (_, length) in EDGE_MAP.items():
+        arr[child] = length
+    return arr
+
+
+EDGE_LENGTHS_JAX = jnp.array(_edge_lengths_array(), dtype=jnp.float32)
+
 OPS = [
-    {"dest": 3, "child1": 0, "child2": 1},
-    {"dest": 4, "child1": 3, "child2": 2},
+    {"dest": _INTERNAL_A, "child1": 0, "child2": 1},
+    {"dest": _INTERNAL_B, "child1": _INTERNAL_A, "child2": 2},
 ]
-EDGE_LENGTHS_JAX = jnp.array([0.1, 0.2, 0.3, 0.4], dtype=jnp.float32)
 
 
 def _sample_Q_pi(rng):
@@ -36,7 +54,7 @@ def _build_problem(seed, use_gpu=False):
     rng = np.random.default_rng(seed)
     Q_jax, pi_jax = _sample_Q_pi(rng)
     tip_data = {
-        i: np.ones((N_PATTERNS, N_STATES), dtype=np.float32) for i in range(N_TAXA)
+        i: np.ones((N_PATTERNS, N_STATES), dtype=np.float64) for i in range(N_TAXA)
     }
     tip_data[0][0] = [1, 0, 0, 0]
     tip_data[1][0] = [1, 0, 0, 0]
@@ -45,15 +63,11 @@ def _build_problem(seed, use_gpu=False):
     tip_data[1][1] = [0, 1, 0, 0]
     tip_data[2][1] = [0, 0, 1, 0]
 
-    binder = BeagleJAX(
-        tip_count=N_TAXA,
-        state_count=N_STATES,
-        pattern_count=N_PATTERNS,
+    binder = build_context_binder(
         tip_data=tip_data,
-        edge_map=EDGE_MAP,
         operations=OPS,
+        pattern_count=N_PATTERNS,
         use_gpu=use_gpu,
-        dtype=jnp.float32,
     )
 
     return binder, Q_jax, pi_jax
@@ -61,7 +75,7 @@ def _build_problem(seed, use_gpu=False):
 
 def _check_gradients(binder, Q_jax, pi_jax):
     def func_to_check(Q_in):
-        return jnp.sum(binder.log_likelihood(EDGE_LENGTHS_JAX, Q_in, pi_jax))
+        return jnp.sum(binder.likelihood_functional(Q_in, pi_jax, EDGE_LENGTHS_JAX))
 
     check_grads(
         func_to_check, (Q_jax,), order=1, modes=["rev"], atol=1e-3, rtol=1e-3, eps=1e-3
