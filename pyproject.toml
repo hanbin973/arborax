@@ -7,10 +7,12 @@ authors = [
     { name = "Hanbin Lee", email = "hblee@umich.edu" },
     { name = "Jonathan Terhorst", email = "jonth@umich.edu" }
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.10"
 dependencies = [
     "cffi>=2.0.0",
     "jax[cuda12]>=0.8.1",
+	"equinox>=0.12.2",
+	"dendropy>=5.0.0",
 ]
 
 [build-system]

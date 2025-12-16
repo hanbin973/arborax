@@ -1,112 +1,73 @@
-import re
+import jax.numpy as jnp
+import equinox as eqx
+from jaxtyping import Array, Int, Float, PRNGKeyArray
+from typing import Any
 
+from arborax import loglik
+from arborax.parameters import GTR
 
-class Node:
-    """
-    Represents a node in the phylogenetic tree.
-    """
+class GTRTree(eqx.Module):
+    # Field definitions with jaxtyping annotations
+    edge_list: Int[Array, "num_edges 2"]
+    branch_lengths: Float[Array, "num_edges"]
+    transition_kernel: GTR
 
-    def __init__(self, id=None, name=None, length=0.0):
-        self.id = id
-        self.name = name
-        self.length = length
-        self.left = None
-        self.right = None
-        self.is_tip = False
+    def __init__(
+            self, 
+            edge_list: Int[Array, "E 2"], 
+            branch_lengths: Float[Array, "E"],
+            num_states: int,
+            key: PRNGKeyArray,
+            ):
+        """
+        Initializes the GTRTree module.
 
+        Args:
+            edge_list: List or array of edge indices (parent, child).
+            branch_lengths: List or array of branch lengths.
+            num_states: Number of character states (e.g., 4 for DNA).
+            key: JAX PRNG key for initializing the GTR parameters.
+        """
+        # 1. Convert inputs to JAX arrays
+        # We assign to local variables first to perform validation before setting fields
+        edge_list_jax = jnp.array(edge_list, dtype=int)
+        branch_lengths_jax = jnp.array(branch_lengths, dtype=float)
 
-def parse_newick_to_beagle_nodes(newick_str):
-    """
-    Parses a Newick string and assigns Beagle-compatible indices.
-
-    Beagle Indexing Convention:
-    - Tips: 0 to N-1
-    - Internals: N to 2N-2
-    - Root: 2N-2
-
-    Returns:
-        (list of Node objects, int tip_count)
-    """
-    # Clean string
-    newick = newick_str.strip().rstrip(";")
-    tokens = re.split(r"([(),:])", newick)
-    tokens = [t for t in tokens if t.strip()]
-
-    stack = []
-    current_node = None
-    tips = []
-
-    # 1. Build basic tree structure
-    i = 0
-    while i < len(tokens):
-        token = tokens[i]
-        if token == "(":
-            node = Node()
-            if stack:
-                parent = stack[-1]
-                if not parent.left:
-                    parent.left = node
-                else:
-                    parent.right = node
-            stack.append(node)
-        elif token == ",":
-            pass
-        elif token == ")":
-            current_node = stack.pop()
-        elif token == ":":
-            i += 1
-            length_str = tokens[i]
-            target = (
-                current_node
-                if current_node
-                else stack[-1].right
-                if stack[-1].right
-                else stack[-1].left
+        # 2. Validation: Check that dimension 0 (number of edges) matches
+        if edge_list_jax.shape[0] != branch_lengths_jax.shape[0]:
+            raise ValueError(
+                f"Shape Mismatch: edge_list has {edge_list_jax.shape[0]} edges, "
+                f"but branch_lengths has {branch_lengths_jax.shape[0]} lengths."
             )
-            target.length = float(length_str)
-        else:
-            # Label (Tip)
-            name = token
-            node = Node(name=name)
-            node.is_tip = True
-            tips.append(node)
-            parent = stack[-1]
-            if not parent.left:
-                parent.left = node
-            else:
-                parent.right = node
-            current_node = node
-        i += 1
 
-    # 2. Assign IDs (Beagle Convention)
-    tip_map = {t.name: i for i, t in enumerate(tips)}
-    for t in tips:
-        t.id = tip_map[t.name]
+        # 3. Assignment
+        # Equinox allows standard assignment syntax inside __init__
+        self.edge_list = edge_list_jax
+        self.branch_lengths = branch_lengths_jax
+        self.transition_kernel = GTR(num_states, key=key)
 
-    # Assign Internal IDs (Sequential post-order approximation)
-    internal_counter = len(tips)
-    all_nodes = tips[:]
+    def __call__(self, tip_partials: Float[Array, "tips states"]) -> Float[Array, ""]:
+        """
+        Forward pass: Calculates the log-likelihood of the tree.
+        
+        Args:
+            tip_partials: A (num_tips, num_states) array of observed data 
+                          (one-hot or probabilistic).
+                          
+        Returns:
+            Scalar log-likelihood.
+        """
+        # 1. Get current GTR matrices (Q and pi)
+        # The transition_kernel handles the parameter constraints internally
+        Q, pi = self.transition_kernel()
 
-    def traverse_assign(node):
-        nonlocal internal_counter
-        if node.is_tip:
-            return
-
-        if node.left:
-            traverse_assign(node.left)
-        if node.right:
-            traverse_assign(node.right)
-
-        if node.id is None:
-            node.id = internal_counter
-            internal_counter += 1
-            all_nodes.append(node)
-
-    # Find root (the one not in children)
-    # Note: A real implementation needs a more robust root finder.
-    # This assumes the last node processed in the stack was root or connected to it.
-    # For this snippet, we assume the last node in 'all_nodes' after traverse is root.
-
-    # Warning: This is a simplified parser. Production code should use DendroPy
-    # to ensure correct post-order traversal for 'operations'.
-    return all_nodes, len(tips)
+        # 2. Delegate to the external loglik function
+        # We pass self.edge_list and self.branch_lengths which are stored in this Module.
+        # Note: If loglik is JAX-compatible, this will be fully differentiable.
+        return loglik(
+            tip_partials=tip_partials,
+            edge_list=self.edge_list,
+            branch_lengths=self.branch_lengths,
+            Q=Q,
+            pi=pi
+        )

@@ -8,6 +8,11 @@ def parse_newick(
         ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Parses a Newick tree, converts it to binary, and returns edge lists and lengths.
+    
+    Indexing Strategy:
+    - Leaves are indexed 0 to (num_leaves - 1).
+    - Internal nodes are indexed num_leaves to (num_nodes - 1).
+    - Uses postorder traversal (children before parents) to assign internal indices.
 
     Args:
         newick_data: The Newick string or a file path to a Newick file.
@@ -29,16 +34,38 @@ def parse_newick(
     tree.resolve_polytomies()
 
     # 3. Map nodes to integer indices
-    # We create a dictionary mapping the Dendropy Node object to a unique integer (0 to N-1)
-    # We map based on a standard traversal (preorder is common)
-    node_to_idx = {node: i for i, node in enumerate(tree)}
+    node_to_idx = {}
+    
+    leaves = []
+    internal_nodes = []
+
+    # Iterate in Postorder: Visits children before parents.
+    # This naturally handles "leaves first" for subtrees, but we explicitly
+    # split lists to enforce the 0..L-1 constraint for all leaves.
+    for node in tree.postorder_node_iter():
+        if node.is_leaf():
+            leaves.append(node)
+        else:
+            internal_nodes.append(node)
+
+    # Assign indices: Leaves first (0 to L-1)
+    for i, node in enumerate(leaves):
+        node_to_idx[node] = i
+        
+    # Assign indices: Internal nodes next (L to N-1)
+    # Since we collected them in postorder, these indices will generally 
+    # increase from the bottom of the tree up to the root.
+    num_leaves = len(leaves)
+    for i, node in enumerate(internal_nodes):
+        node_to_idx[node] = i + num_leaves
 
     edge_list = []
     length_list = []
 
     # 4. Traverse to collect edges
-    # In Dendropy, edges are attributes of the node they lead TO (the child).
-    for node in tree:
+    # We can iterate postorder or preorder here; the edge list content is the same.
+    # Postorder is safe.
+    for node in tree.postorder_node_iter():
         # The root node has no parent, so it represents the start of the tree, 
         # not an edge connecting two nodes. We skip it.
         if node.parent_node is not None:
