@@ -1,22 +1,26 @@
+import numpy as np
+import jax
 import jax.numpy as jnp
 import equinox as eqx
 from jaxtyping import Array, Int, Float, PRNGKeyArray
-from typing import Any
+from typing import Any, Tuple
 
-from arborax import loglik
+from arborax import loglik, create_arborax_context
+from arborax.context import ArboraxContext
 from arborax.parameters import GTR
 
 class GTRTree(eqx.Module):
     # Field definitions with jaxtyping annotations
-    edge_list: Int[Array, "num_edges 2"]
-    branch_lengths: Float[Array, "num_edges"]
-    transition_kernel: GTR
+    partials_shape: Tuple[int, int, int] = eqx.field(static=True)
+    edge_lengths: Float[Array, "E"]
+    context: ArboraxContext = eqx.field(static=True)
+    transition_kernel: GTR 
 
     def __init__(
             self, 
             edge_list: Int[Array, "E 2"], 
             branch_lengths: Float[Array, "E"],
-            num_states: int,
+            partials_shape: Tuple[int, int, int],
             key: PRNGKeyArray,
             ):
         """
@@ -42,11 +46,13 @@ class GTRTree(eqx.Module):
 
         # 3. Assignment
         # Equinox allows standard assignment syntax inside __init__
-        self.edge_list = edge_list_jax
-        self.branch_lengths = branch_lengths_jax
-        self.transition_kernel = GTR(num_states, key=key)
+        self.partials_shape = partials_shape
+        self.edge_lengths, self.context = create_arborax_context(
+                edge_list, branch_lengths, partials_shape
+                )
+        self.transition_kernel = GTR(partials_shape[2], key=key)
 
-    def __call__(self, tip_partials: Float[Array, "tips states"]) -> Float[Array, ""]:
+    def __call__(self) -> Float[Array, ""]:
         """
         Forward pass: Calculates the log-likelihood of the tree.
         
@@ -57,17 +63,28 @@ class GTRTree(eqx.Module):
         Returns:
             Scalar log-likelihood.
         """
-        # 1. Get current GTR matrices (Q and pi)
-        # The transition_kernel handles the parameter constraints internally
         Q, pi = self.transition_kernel()
+        frozen_lengths = jax.lax.stop_gradient(self.edge_lengths)
+        return self.context.likelihood_functional(
+                Q,
+                pi,
+                self.edge_lengths
+            )
 
-        # 2. Delegate to the external loglik function
-        # We pass self.edge_list and self.branch_lengths which are stored in this Module.
-        # Note: If loglik is JAX-compatible, this will be fully differentiable.
-        return loglik(
-            tip_partials=tip_partials,
-            edge_list=self.edge_list,
-            branch_lengths=self.branch_lengths,
-            Q=Q,
-            pi=pi
-        )
+    def bind_partials(self, tip_partials_numpy: np.ndarray):
+        """
+        Explicitly bind data to the C++ context.
+        Call this ONCE before training with a standard NumPy array.
+        """
+        tip_count = self.partials_shape[0]
+        num_states = self.partials_shape[2]
+
+        # Create dict mapping tip_index -> sequence data
+        tip_dict = {idx: tip_partials_numpy[idx] for idx in range(tip_count)}
+
+        # We pass dummy Q and pi just to satisfy the function signature.
+        # They are IGNORED by likelihood_functional during training.
+        dummy_Q = np.eye(num_states)
+        dummy_pi = np.ones(num_states) / num_states
+
+        self.context.bind_data(tip_dict, dummy_Q, dummy_pi)

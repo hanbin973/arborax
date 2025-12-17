@@ -1,14 +1,71 @@
 from collections import defaultdict
-from typing import Sequence, Union
+from typing import Sequence, Union, Tuple
 
 import numpy as np
 
 from .beagle_cffi import BeagleLikelihoodCalculator
 from .context import ArboraxContext
-from .tree import Node, parse_newick_to_beagle_nodes
 
 __version__ = "0.1.0"
 
+
+def create_arborax_context(
+    edge_list: Sequence[Tuple[int, int]],
+    branch_lengths: Sequence[float],
+    partials_shape: Tuple[int, int, int]
+) -> Tuple[ArboraxContext, np.ndarray]:
+    """
+    Pre-initializes the ArboraxContext and maps branch lengths to the correct node order.
+
+    Args:
+        edge_list: Sequence of (parent, child) indices.
+        branch_lengths: Sequence of branch lengths corresponding to edge_list.
+        partials_shape: Tuple of (num_tips, num_sites, num_states).
+
+    Returns:
+        context: An initialized ArboraxContext with operations scheduled.
+        edge_lengths_arr: A numpy array of branch lengths indexed by child node ID.
+    """
+    # 1. Unpack Dimensions
+    # Shape is (tips, sites, states) -> (tip_count, pattern_count, states)
+    tip_count, pattern_count, _ = partials_shape
+
+    # 2. Validate inputs (NumPy/Python side)
+    edge_array = np.asarray(edge_list, dtype=np.int32)
+    branch_lengths_arr = np.asarray(branch_lengths, dtype=np.float64)
+
+    if edge_array.ndim != 2 or edge_array.shape[1] != 2:
+        raise ValueError("edge_list must be shape (E, 2)")
+
+    expected_edge_count = 2 * tip_count - 2
+    if len(edge_array) != expected_edge_count:
+        raise ValueError(f"Expected {expected_edge_count} edges, got {len(edge_array)}")
+
+    if len(edge_array) != len(branch_lengths_arr):
+        raise ValueError("branch_lengths length must match edge_list length")
+
+    # 3. Build Tree Topology (Static Analysis)
+    # This generates the traversal order (operations) and total node count
+    tree_info = _build_tree_from_edges(edge_array, tip_count)
+    operations = tree_info["operations"]
+    node_count = tree_info["node_count"]
+
+    # 4. Map Branch Lengths
+    # Maps the input branch lengths (ordered by edge_list) to the internal
+    # array format (ordered by node index) required by the C++ engine.
+    edge_lengths_vec = _edge_lengths_from_pairs(
+        node_count, edge_array, branch_lengths_arr
+    )
+    edge_lengths_arr = np.asarray(edge_lengths_vec, dtype=np.float64)
+
+    # 5. Initialize Context
+    context = ArboraxContext(
+        tip_count=tip_count,
+        operations=operations,
+        pattern_count=pattern_count,
+    )
+
+    return edge_lengths_arr, context
 
 def loglik(
     tip_partials: Union[np.ndarray, dict[int, np.ndarray]],
@@ -54,7 +111,6 @@ def loglik(
     context.bind_data(tip_dict, Q, pi)
     edge_lengths_arr = np.asarray(edge_lengths_vec, dtype=Q.dtype)
     return context.likelihood_functional(Q, pi, edge_lengths_arr)
-
 
 def _normalize_tip_partials(
     tip_partials: Union[np.ndarray, dict[int, np.ndarray]],

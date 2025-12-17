@@ -6,14 +6,15 @@ import jax.numpy as jnp
 import numpy as np
 from jax.scipy.linalg import expm
 
-from .beagle_cffi import BeagleLikelihoodCalculator
+from collections import defaultdict
+from typing import Sequence, Union
 
+from .beagle_cffi import BeagleLikelihoodCalculator
 
 def get_jax_dtype():
     if jax.config.read("jax_enable_x64"):
         return jnp.float64, np.float64
     return jnp.float32, np.float32
-
 
 class ArboraxContext:
     def __init__(self, tip_count, operations, pattern_count=1, use_gpu=None):
@@ -192,6 +193,7 @@ class ArboraxContext:
 
     def likelihood_functional(self, Q, pi, edge_lengths):
         self._ensure_bound()
+        # TODO: implement efficient expm
         P_stack = jax.vmap(lambda t: expm(Q * t))(edge_lengths)
         return _beagle_likelihood_op(P_stack, pi, self)
 

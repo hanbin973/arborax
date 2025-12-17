@@ -6,12 +6,9 @@ from typing import Tuple
 from jaxtyping import Array, Float, PRNGKeyArray
 
 class GTR(eqx.Module):
-    # Metadata
     num_states: int = eqx.field(static=True)
-    
-    # Learnable Parameters
-    logit_pi: Float[Array, "num_states"]
-    q_factor: Float[Array, "num_states num_states"]
+    logit_pi: Float[Array, "s"]
+    q_factor: Float[Array, "s s"]
 
     def __init__(self, num_states: int, key: PRNGKeyArray):
         """
@@ -27,7 +24,7 @@ class GTR(eqx.Module):
 
     def __call__(self) -> Tuple[Float[Array, "s s"], Float[Array, "s"]]:
         """
-        Computes the transition probability matrix P(t).
+        Computes the rate probability matrix and root probability.
         """
         # recover equilibrium probability and exchangeability matrix
         pi = jnn.softmax(self.logit_pi)

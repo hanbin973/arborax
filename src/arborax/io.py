@@ -83,3 +83,62 @@ def parse_newick(
     edge_lengths = np.array(length_list, dtype=float)
 
     return edge_indices, edge_lengths
+
+import numpy as np
+from collections import defaultdict
+
+def prepare_inputs_for_jax(edge_indices, edge_lengths):
+    """
+    Converts edge lists from parse_newick into JAX-compatible Ops and aligned arrays.
+    
+    Args:
+        edge_indices: (E, 2) array of [parent, child] from parse_newick.
+        edge_lengths: (E,) array of branch lengths.
+        
+    Returns:
+        ops: (N_internal, 3) array of [parent, child_left, child_right].
+             Sorted by parent index to ensure valid post-order execution.
+        aligned_branch_lengths: (N_nodes,) array. 
+             aligned_branch_lengths[i] is the length of the branch ABOVE node i.
+             The root (last index) will have length 0.0.
+    """
+    # 1. Determine total number of nodes (N)
+    # The maximum index in edge_indices is the root (or largest internal node)
+    num_nodes = edge_indices.max() + 1
+    
+    # 2. Align branch lengths to node indices
+    # We want an array where array[i] = length of branch ending at node i.
+    aligned_branch_lengths = np.zeros(num_nodes)
+    
+    # edge_indices[:, 1] is the column of 'child' indices. 
+    # The branch length corresponds to the branch leading TO the child.
+    children_indices = edge_indices[:, 1]
+    aligned_branch_lengths[children_indices] = edge_lengths
+    
+    # 3. Group children by parent to build Ops
+    # We use a dictionary to collect [child1, child2] for each parent.
+    # Since resolve_polytomies() was called, strict binary is expected.
+    children_map = defaultdict(list)
+    for (p, c) in edge_indices:
+        children_map[p].append(c)
+        
+    # 4. Construct the Ops array
+    # We must iterate through parents in strictly increasing order.
+    # Your parse_newick assigns IDs L to N-1 in postorder, so sorting 
+    # parents ascendingly ensures we process children before parents.
+    internal_parents = sorted(children_map.keys())
+    
+    ops_list = []
+    for p in internal_parents:
+        children = children_map[p]
+        
+        # Sanity check for binary tree
+        if len(children) != 2:
+            raise ValueError(f"Node {p} is not binary. Found children: {children}")
+            
+        # Append [parent, left, right]
+        ops_list.append([p, children[0], children[1]])
+        
+    ops = np.array(ops_list, dtype=np.int32)
+    
+    return ops, aligned_branch_lengths
