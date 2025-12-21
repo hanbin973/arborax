@@ -194,32 +194,41 @@ def fast_tree_likelihood_ops_callable(log_transition_fn, root_probs, aligned_bra
 
     return total_log_likelihood
 
+import jax
+import jax.numpy as jnp
+import jax.random as jr
+import jax.nn as jnn
+import equinox as eqx
+
 class TreeLikelihood(eqx.Module):
     """
-    A differentiable layer that binds a learnable GTR model to a fixed tree topology.
+    A differentiable layer that binds a learnable substitution model to a fixed tree topology.
     """
-    gtr: GTR
+    # Generalized: accepts any Equinox module (GTR, F81, JC69, etc.)
+    model: eqx.Module 
     operations: jax.Array
     aligned_branch_lengths: jax.Array
-    
+
     def __init__(
-        self, 
-        gtr: GTR, 
-        edge_indices: jax.Array, 
+        self,
+        model: eqx.Module,
+        edge_indices: jax.Array,
         edge_lengths: jax.Array
     ):
         """
         Args:
-            gtr: An instance of arborax.markov.GTR.
+            model: An instance of a substitution model (GTR, F81, JukesCantor).
+                   Must be callable with t -> matrix, and have .stationary_probs.
             edge_indices: (E, 2) array of [parent, child] indices.
             edge_lengths: (E,) array of branch lengths.
         """
-        self.gtr = gtr
-        
+        self.model = model
+
         # Delegate topology compilation to the IO module
         # fast_tree_likelihood_ops_callable expects integer ops and float lengths
+        # (Assuming prepare_inputs_for_jax is imported from your context)
         ops, lengths = prepare_inputs_for_jax(edge_indices, edge_lengths)
-        
+
         # Store as constant JAX arrays (frozen part of the model)
         self.operations = jnp.array(ops, dtype=jnp.int32)
         self.aligned_branch_lengths = jnp.array(lengths, dtype=jnp.float32)
@@ -227,32 +236,33 @@ class TreeLikelihood(eqx.Module):
     def __call__(self, leaf_data: jax.Array) -> jax.Array:
         """
         Computes the log-likelihood of the leaf data.
-        
+
         Args:
             leaf_data: Shape (NumLeaves, NumStates) or (NumLeaves, NumSites, NumStates).
         """
         # 1. Freeze branch lengths (Topology is fixed during optimization)
         lengths = jax.lax.stop_gradient(self.aligned_branch_lengths)
-        
+
         # 2. Prepare the Kernel Inputs
-        transition_fn = self.gtr
-        root_probs = self.gtr.stationary_probs
-        
+        # The generic model is used here as the transition function
+        transition_fn = self.model
+        root_probs = self.model.stationary_probs
+
         # 3. Handle Vectorization (Multiple Sites)
         if leaf_data.ndim == 3:
             # Shape: (Leaves, Sites, States) -> vmap over axis 1 (Sites)
             # We map only leaf_data; everything else is broadcasted.
             likelihood_fn = jax.vmap(
-                fast_tree_likelihood_ops_callable, 
+                fast_tree_likelihood_ops_callable,
                 in_axes=(None, None, None, None, 1)
             )
-            
+
             per_site_ll = likelihood_fn(
                 transition_fn, root_probs, lengths, self.operations, leaf_data
             )
-            
+
             return jnp.mean(per_site_ll)
-            
+
         else:
             # Shape: (Leaves, States) -> Single site
             return fast_tree_likelihood_ops_custom(
@@ -264,45 +274,37 @@ class KLD(eqx.Module):
     num_mc: int = eqx.field(static=True)
 
     def __init__(
-        self, 
-        gtr, 
-        edge_indices, 
-        edge_lengths, 
+        self,
+        model: eqx.Module,
+        edge_indices: jax.Array,
+        edge_lengths: jax.Array,
         num_mc: int
     ):
         """
         Args:
-            gtr: GTR model instance.
+            model: Substitution model instance (GTR, F81, etc).
             edge_indices: Topology indices.
             edge_lengths: Branch lengths.
             num_mc: Number of Monte Carlo samples to draw per leaf.
         """
-        self.tree_likelihood = TreeLikelihood(gtr, edge_indices, edge_lengths)
+        # Pass the generic model into TreeLikelihood
+        self.tree_likelihood = TreeLikelihood(model, edge_indices, edge_lengths)
         self.num_mc = num_mc
 
     def __call__(self, leaf_data: jax.Array, key: jax.random.PRNGKey) -> jax.Array:
         """
         Samples states at the tips and computes the average log-likelihood.
-
-        Args:
-            leaf_data: (num_leaves, num_states) matrix of probabilities.
-            key: PRNGKey for the sampling process.
         """
         num_leaves, num_states = leaf_data.shape
 
         # 1. Prepare Logits
         # Logits for categorical sampling are just the log-probabilities.
-        # We add epsilon to prevent log(0) -> -inf issues.
         logits = jnp.log(leaf_data + 1e-30)
 
         # 2. Vectorized Categorical Sampling
-        # By passing shape=(num_mc, num_leaves), JAX treats the leading 
-        # dimension of 'logits' (num_leaves) as a batch.
-        # Output shape: (num_mc, num_leaves)
         sample_indices = jr.categorical(key, logits, shape=(self.num_mc, num_leaves))
 
         # 3. Reshape and Transform
-        # We need (num_leaves, num_mc, num_states) for TreeLikelihood.
         # First, transpose to (num_leaves, num_mc)
         sample_indices = jnp.transpose(sample_indices)
 
@@ -311,7 +313,4 @@ class KLD(eqx.Module):
         sampled_one_hot = jnn.one_hot(sample_indices, num_classes=num_states)
 
         # 5. Compute Likelihood
-        # This calls TreeLikelihood.__call__, which detects ndim=3 and 
-        # internally uses vmap(fast_tree_likelihood_ops_callable, in_axes=(..., 1))
-        # and returns jnp.mean(per_site_ll).
         return - self.tree_likelihood(sampled_one_hot)
