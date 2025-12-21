@@ -2,6 +2,8 @@ import numpy as np
 
 import jax
 import jax.numpy as jnp
+import jax.random as jr
+import jax.nn as jnn
 from jax.scipy.linalg import expm
 from jax.scipy.special import logsumexp
 import equinox as eqx
@@ -256,3 +258,60 @@ class TreeLikelihood(eqx.Module):
             return fast_tree_likelihood_ops_custom(
                 transition_fn, root_probs, lengths, self.operations, leaf_data
             )
+
+class KLD(eqx.Module):
+    tree_likelihood: TreeLikelihood
+    num_mc: int = eqx.field(static=True)
+
+    def __init__(
+        self, 
+        gtr, 
+        edge_indices, 
+        edge_lengths, 
+        num_mc: int
+    ):
+        """
+        Args:
+            gtr: GTR model instance.
+            edge_indices: Topology indices.
+            edge_lengths: Branch lengths.
+            num_mc: Number of Monte Carlo samples to draw per leaf.
+        """
+        self.tree_likelihood = TreeLikelihood(gtr, edge_indices, edge_lengths)
+        self.num_mc = num_mc
+
+    def __call__(self, leaf_data: jax.Array, key: jax.random.PRNGKey) -> jax.Array:
+        """
+        Samples states at the tips and computes the average log-likelihood.
+
+        Args:
+            leaf_data: (num_leaves, num_states) matrix of probabilities.
+            key: PRNGKey for the sampling process.
+        """
+        num_leaves, num_states = leaf_data.shape
+
+        # 1. Prepare Logits
+        # Logits for categorical sampling are just the log-probabilities.
+        # We add epsilon to prevent log(0) -> -inf issues.
+        logits = jnp.log(leaf_data + 1e-30)
+
+        # 2. Vectorized Categorical Sampling
+        # By passing shape=(num_mc, num_leaves), JAX treats the leading 
+        # dimension of 'logits' (num_leaves) as a batch.
+        # Output shape: (num_mc, num_leaves)
+        sample_indices = jr.categorical(key, logits, shape=(self.num_mc, num_leaves))
+
+        # 3. Reshape and Transform
+        # We need (num_leaves, num_mc, num_states) for TreeLikelihood.
+        # First, transpose to (num_leaves, num_mc)
+        sample_indices = jnp.transpose(sample_indices)
+
+        # 4. Convert to One-Hot
+        # Output shape: (num_leaves, num_mc, num_states)
+        sampled_one_hot = jnn.one_hot(sample_indices, num_classes=num_states)
+
+        # 5. Compute Likelihood
+        # This calls TreeLikelihood.__call__, which detects ndim=3 and 
+        # internally uses vmap(fast_tree_likelihood_ops_callable, in_axes=(..., 1))
+        # and returns jnp.mean(per_site_ll).
+        return - self.tree_likelihood(sampled_one_hot)
